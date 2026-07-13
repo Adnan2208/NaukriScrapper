@@ -399,10 +399,10 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
       await randDelay();
     }
 
-    console.log(`✓ Done. ${totalSoFar} job records written to ${csvPath}`);
+    console.log(`Done. ${totalSoFar} job records written to ${csvPath}`);
     return { count: totalSoFar, csvPath, records: collected };
   } catch (err) {
-    console.error(`✗ Scrape failed: ${err.message}`);
+    console.error(`Scrape failed: ${err.message}`);
     // We still return whatever we collected — partial data is better than nothing.
     return { count: totalSoFar, csvPath, records: collected, error: err.message };
   } finally {
