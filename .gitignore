@@ -94,3 +94,4 @@ temp/
 # ==========================
 .vercel
 .netlify
+.debug
