@@ -13,7 +13,10 @@
  *
  * Scrapes ONLY:
  *   - company: company name from the job card
- *   - website: official company website (constructed from company name)
+ *   - website: official company website
+ *       1. Check pre-made popular company map
+ *       2. If not found and Clearbit API key is set, query Clearbit autocomplete
+ *       3. Fallback: "direct domain scrape not possible"
  *
  * The scraper is intentionally defensive:
  *   - Randomized delays (2-5s) between human-ish actions
@@ -29,6 +32,11 @@ const { format } = require("fast-csv");
 const DEFAULT_SAMPLE_SIZE = parseInt(process.env.SCRAPE_SAMPLE_SIZE || "50", 10);
 const DEBUG_DIR = process.env.SCRAPE_DEBUG_DIR || "./debug";
 const HEADLESS = process.env.SCRAPE_HEADLESS === "false" ? false : true;
+const CLEARBIT_API_KEY = process.env.CLEARBIT_API_KEY;
+
+// Pre-made map of popular companies -> official websites
+const POPULAR_COMPANY_WEBSITES = require("./popularCompanies.json");
+console.log(POPULAR_COMPANY_WEBSITES);
 
 const CHALLENGE_SELECTORS = [
   'iframe[src*="captcha"]',
@@ -48,16 +56,6 @@ const CONSENT_DISMISS_SELECTORS = [
   '[class*="consent"] button',
   '[id*="cookie"] button',
 ];
-
-function buildCompanyWebsite(companyName) {
-  if (!companyName) return "";
-  const clean = companyName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "")
-    .trim();
-  if (!clean) return "";
-  return `https://www.${clean}.com/`;
-}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -109,64 +107,48 @@ async function captureDebug(page, tag) {
   }
 }
 
-// Simple heuristic to construct a company website from name
-function buildCompanyWebsite(companyName) {
-  if (!companyName || !companyName.trim()) return "";
-  const name = companyName
+// Resolve company website:
+// 1. Check pre-made popular company map
+// 2. If not found and Clearbit API key is set, query Clearbit autocomplete
+// 3. Fallback: return "direct domain scrape not possible"
+async function resolveCompanyWebsite(companyName) {
+  if (!companyName || !companyName.trim()) {
+    return "direct domain scrape not possible";
+  }
+
+  const cleanKey = companyName
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "")
     .trim();
-  if (!name) return "";
-  // Common exceptions / known mappings
-  const known = {
-    "tcs": "https://www.tcs.com",
-    "infosys": "https://www.infosys.com",
-    "wipro": "https://www.wipro.com",
-    "hcl": "https://www.hcltech.com",
-    "techmahindra": "https://www.techmahindra.com",
-    "capgemini": "https://www.capgemini.com",
-    "cognizant": "https://www.cognizant.com",
-    "accenture": "https://www.accenture.com",
-    "ibm": "https://www.ibm.com",
-    "microsoft": "https://www.microsoft.com",
-    "google": "https://www.google.com",
-    "amazon": "https://www.amazon.com",
-    "oracle": "https://www.oracle.com",
-    "dell": "https://www.dell.com",
-    "hp": "https://www.hp.com",
-    "cisco": "https://www.cisco.com",
-    "adobe": "https://www.adobe.com",
-    "salesforce": "https://www.salesforce.com",
-    "vmware": "https://www.vmware.com",
-    "intel": "https://www.intel.com",
-    "nvidia": "https://www.nvidia.com",
-    "qualcomm": "https://www.qualcomm.com",
-    "paypal": "https://www.paypal.com",
-    "uber": "https://www.uber.com",
-    "airbnb": "https://www.airbnb.com",
-    "netflix": "https://www.netflix.com",
-    "spotify": "https://www.spotify.com",
-    "twitter": "https://www.twitter.com",
-    "linkedin": "https://www.linkedin.com",
-    "facebook": "https://www.facebook.com",
-    "meta": "https://www.meta.com",
-    "apple": "https://www.apple.com",
-    "samsung": "https://www.samsung.com",
-    "mastercard": "https://www.mastercard.com",
-    "visa": "https://www.visa.com",
-    "jpmorgan": "https://www.jpmorganchase.com",
-    "goldmansachs": "https://www.goldmansachs.com",
-    "morganstanley": "https://www.morganstanley.com",
-    "barclays": "https://www.barclays.com",
-    "citibank": "https://www.citibank.com",
-    "hsbc": "https://www.hsbc.com",
-    "deutschebank": "https://www.db.com",
-    "bankofamerica": "https://www.bankofamerica.com",
-    "wellsfargo": "https://www.wellsfargo.com",
-  };
-  if (known[name]) return known[name];
-  // Generic fallback: try www.<name>.com
-  return `https://www.${name}.com`;
+
+  if (!cleanKey) {
+    return "direct domain scrape not possible";
+  }
+
+  // 1. Popular company map
+  if (POPULAR_COMPANY_WEBSITES[cleanKey]) {
+    return POPULAR_COMPANY_WEBSITES[cleanKey];
+  }
+
+  // 2. Clearbit Autocomplete API (no API key required)
+  try {
+    const response = await fetch(
+      `https://autocomplete.clearbit.com/v1/companies/suggest?query=${encodeURIComponent(companyName)}`
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+
+      if (Array.isArray(data) && data.length > 0 && data[0].domain) {
+        return `https://${data[0].domain}`;
+      }
+    }
+  } catch (_) {
+    // Ignore errors and fall through
+  }
+
+  // 3. Fallback
+  return "direct domain scrape not possible";
 }
 
 async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) {
@@ -293,7 +275,7 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
 
     await randDelay();
 
-    // Press Enter to submit the search
+    // Submit search via Enter key
     console.log("→ Submitting search via Enter key…");
     await page.keyboard.press("Enter");
 
@@ -376,8 +358,8 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
             continue;
           }
 
-          // Build website from company name
-          const website = buildCompanyWebsite(company);
+          // Resolve website
+          const website = await resolveCompanyWebsite(company);
 
           const row = {
             company,
