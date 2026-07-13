@@ -34,7 +34,7 @@ const { format } = require("fast-csv");
 
 const DEFAULT_SAMPLE_SIZE = parseInt(process.env.SCRAPE_SAMPLE_SIZE || "50", 10);
 const DEBUG_DIR = process.env.SCRAPE_DEBUG_DIR || "./debug";
-const HEADLESS = process.env.SCRAPE_HEADLESS !== "false"; // set SCRAPE_HEADLESS=false to watch it run
+const HEADLESS = process.env.SCRAPE_HEADLESS === "false" ? false : true; // set SCRAPE_HEADLESS=false to watch it run
 
 // Cards on search results page. Naukri renders server-side HTML for the
 // initial list and hydrates with React; we anchor to the article wrapper.
