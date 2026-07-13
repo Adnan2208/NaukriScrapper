@@ -87,8 +87,13 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
     console.log("→ Launching headless browser, navigating to Naukri…");
     await page.goto("https://www.naukri.com", { waitUntil: "domcontentloaded", timeout: 60000 });
 
-    // Make sure homepage chrome loaded before touching inputs.
-    await page.waitForSelector("input#qpCloser, input.sugInp, form#searchForm", { timeout: 30000 });
+    // Naukri serves many homepage variants. Wait for any common search-related
+    // element to appear, or proceed after a generic delay if nothing matches.
+    console.log("→ Waiting for search UI to appear…");
+    await Promise.race([
+      page.waitForSelector('input[placeholder*="Skills" i], input[placeholder*="Designations" i], input.sugInp, input[placeholder*="Role" i], input[placeholder*="job" i], form#searchForm, div[class*="searchForm"], div[class*="homePage"]', { timeout: 30000 }).catch(() => {}),
+      sleep(8000),
+    ]);
 
     const challenge = await detectChallenge(page);
     if (challenge) {
@@ -97,51 +102,98 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
       );
     }
 
+    // Dump page HTML snippet for debugging if needed
+    // console.log(await page.content().then(c => c.slice(0, 3000)));
+
     console.log("→ Filling search form (role = software developer, exp = 0, location = empty)…");
-    // The role/skills/designation input on Naukri (the first placeholder.
-    const roleInput = page.locator('input[placeholder*="Skills"], input[placeholder*="Designations"], input.sugInp').first();
+    // Try multiple common role input selectors
+    const roleSelectors = [
+      'input[placeholder*="Skills" i]',
+      'input[placeholder*="Designations" i]',
+      'input[placeholder*="Role" i]',
+      'input[placeholder*="job" i]',
+      'input.sugInp',
+      'input[placeholder*="Keywords" i]',
+      '#qpCloser',
+      'input[id*="skill"]',
+    ];
+    let roleInput = null;
+    for (const sel of roleSelectors) {
+      const loc = page.locator(sel).first();
+      if (await loc.count()) { roleInput = loc; break; }
+    }
+    if (!roleInput) throw new Error("Could not locate role/skills input on Naukri homepage");
     await roleInput.click();
     await roleInput.fill("");
     await roleInput.type("software developer", { delay: 80 });
 
-    // Experience dropdown: click to open, pick "0 years" / "Fresher".
-    // Naukri's exp dropdown uses a div with id expDDP and options with class "expOpt".
-    const expDD = page.locator("#expDD, .expDD, [id*='expDD']").first();
-    if (await expDD.count()) {
+    // Experience dropdown: click to open, pick "0 years" / "Fresher"
+    const expDDSelectors = ["#expDD", ".expDD", "[id*='expDD']", "div[class*='exp']", "select[name*='exp' i]"];
+    let expDD = null;
+    for (const sel of expDDSelectors) {
+      const loc = page.locator(sel).first();
+      if (await loc.count()) { expDD = loc; break; }
+    }
+    if (expDD) {
       await expDD.click();
       await randDelay();
-      await page.waitForSelector('//li[normalize-space()="0 years"] | //li[normalize-space()="Fresher"]', { timeout: 5000 }).catch(() => {});
-      const fresher = page.locator('//li[normalize-space()="0 years"] | //li[normalize-space()="Fresher"]').first();
-      if (await fresher.count()) {
-        await fresher.click();
-      }
-      // If the literal list-item wasn't found, fall back to typing into the
-      // experience field directly (some homepage variants expose a textbox).
-      if (!(await fresher.count())) {
-        const expText = page.locator('input[placeholder*="Experience" i]').first();
-        if (await expText.count()) {
-          await expText.click();
-          await expText.fill("0");
+      const fresherSelectors = [
+        '//li[normalize-space()="0 years"]',
+        '//li[normalize-space()="Fresher"]',
+        '//li[contains(., "0 year")]',
+        '//li[contains(., "Fresher")]',
+        'li:has-text("0 years")',
+        'li:has-text("Fresher")',
+      ];
+      for (const sel of fresherSelectors) {
+        const opt = page.locator(sel).first();
+        if (await opt.count()) {
+          await opt.click();
+          break;
         }
+      }
+    } else {
+      // Fallback: try typing into an experience text field
+      const expText = page.locator('input[placeholder*="Experience" i], input[name*="exp" i]').first();
+      if (await expText.count()) {
+        await expText.click();
+        await expText.fill("0");
       }
     }
 
     await randDelay();
 
-    // Click the Search button.
-    const searchBtn = page.locator("button[type='submit'], input[type='submit'], a.search-btn").first();
+    // Click the Search button
+    const searchBtnSelectors = [
+      "button[type='submit']",
+      "input[type='submit']",
+      "a.search-btn",
+      "button:has-text('Search')",
+      "button:has-text('SEARCH')",
+      "[class*='searchBtn']",
+      "[class*='search-btn']",
+    ];
+    let searchBtn = null;
+    for (const sel of searchBtnSelectors) {
+      const loc = page.locator(sel).first();
+      if (await loc.count()) { searchBtn = loc; break; }
+    }
+    if (!searchBtn) throw new Error("Could not locate Search button");
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
       searchBtn.click(),
     ]);
 
     console.log("→ Waiting for results page to render job cards…");
-    await page.waitForSelector("article.jobTuple, .jobTuple, [data-job-id]", { timeout: 60000 });
+    // Results page cards — be broad since class names change
+    await page.waitForSelector(
+      'article[class*="jobTuple"], div[class*="jobTuple"], div[data-job-id], li[class*="jobTuple"], div[class*="srp-jobtuple"]',
+      { timeout: 60000 }
+    );
     await randDelay();
 
     while (totalSoFar < sampleSize) {
       console.log(`→ Page ${pageNum}: scrolling to load all cards…`);
-      // Slow scroll to give lazy content a chance to hydrate.
       await page.evaluate(async () => {
         await new Promise((resolve) => {
           let total = 0;
@@ -156,11 +208,25 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
         });
       });
 
-      const cards = page.locator("article.jobTuple, .jobTuple, [data-job-id]");
+      // Broader card selector — Naukri changes class names often
+      const cardSelectors = [
+        'article[class*="jobTuple"]',
+        'div[class*="jobTuple"]',
+        'div[data-job-id]',
+        'li[class*="jobTuple"]',
+        'div[class*="srp-jobtuple"]',
+        'div[class*="job-card"]',
+        'div[class*="tuple"]',
+      ];
+      let cards = null;
+      for (const sel of cardSelectors) {
+        const loc = page.locator(sel);
+        if (await loc.count()) { cards = loc; break; }
+      }
+      if (!cards) cards = page.locator("article, div[data-job-id]");
       const cardCount = await cards.count();
       console.log(`   Page ${pageNum}: ${cardCount} cards present.`);
       if (cardCount === 0) {
-        // Possible captcha / login wall mid-flow.
         const challenge = await detectChallenge(page);
         if (challenge) {
           throw new Error(`Challenge appeared on results page (${challenge}). Aborting.`);
@@ -172,33 +238,34 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
       for (let i = 0; i < cardCount && totalSoFar < sampleSize; i++) {
         const card = cards.nth(i);
         try {
+          // Use broader extraction — try multiple selectors per field
           const title =
-            (await card.locator("a.title, .title").first().innerText().catch(() => ""))?.trim() ||
+            (await card.locator('a[class*="title"], .title, [class*="title"] a, h2, h3').first().innerText().catch(() => ""))?.trim() ||
             (await card.locator("a").first().getAttribute("title").catch(() => "")) ||
             "";
           const company =
-            (await card.locator(".companyInfo a, a.subTitle, .comp-name").first().innerText().catch(() => ""))?.trim() ||
+            (await card.locator('a[class*="company"], .companyInfo a, a.subTitle, [class*="comp-name"], [class*="company"]').first().innerText().catch(() => ""))?.trim() ||
             "";
           const location =
-            (await card.locator(".locationsContainer, .location, .loc").first().innerText().catch(() => ""))?.trim() ||
+            (await card.locator('[class*="location"], .locationsContainer, .location, .loc, [class*="loc"]').first().innerText().catch(() => ""))?.trim() ||
             "";
           const experience =
-            (await card.locator(".experienceContainer, .exp, .exp-wdgt").first().innerText().catch(() => ""))?.trim() ||
+            (await card.locator('[class*="experience"], .experienceContainer, .exp, .exp-wdgt, [class*="exp"]').first().innerText().catch(() => ""))?.trim() ||
             "";
           const salary =
-            (await card.locator(".salaryContainer, .sal, .salary").first().innerText().catch(() => ""))?.trim() ||
+            (await card.locator('[class*="salary"], .salaryContainer, .sal, .salary, [class*="sal"]').first().innerText().catch(() => ""))?.trim() ||
             "";
           const skillsText =
-            (await card.locator(".tagsContainer, .skills, .keySkills, ul.tags li").first().innerText().catch(() => ""))?.trim() ||
+            (await card.locator('[class*="skill"], [class*="tag"], .tagsContainer, .skills, .keySkills, ul.tags li').first().innerText().catch(() => ""))?.trim() ||
             "";
           const description =
-            (await card.locator(".job-description, .jobDesc, .job-desc").first().innerText().catch(() => ""))?.trim() ||
+            (await card.locator('[class*="description"], .job-description, .jobDesc, .job-desc, [class*="desc"]').first().innerText().catch(() => ""))?.trim() ||
             "";
           const postedDate =
-            (await card.locator(".jobTupleFooter, .postedDate, .footerText").first().innerText().catch(() => ""))?.trim() ||
+            (await card.locator('[class*="posted"], [class*="footer"], .jobTupleFooter, .postedDate, .footerText').first().innerText().catch(() => ""))?.trim() ||
             "";
           const url =
-            (await card.locator("a.title, a").first().getAttribute("href").catch(() => "")) || "";
+            (await card.locator('a[class*="title"], a').first().getAttribute("href").catch(() => "")) || "";
 
           const row = {
             title,
@@ -213,7 +280,6 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
             scrapedAt: new Date().toISOString(),
           };
 
-          // Write incrementally. fast-csv flushes per row.
           csvStream.write(row);
           collected.push(row);
           totalSoFar += 1;

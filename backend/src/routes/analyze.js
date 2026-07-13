@@ -125,7 +125,7 @@ function safeParseJson(text) {
 }
 
 // POST /analyze  — reads CSV, sends summary to Groq, returns structured insights.
-router.post("/analyze", async (req, res) => {
+router.post("/", async (req, res) => {
   const csvPath = process.env.CSV_OUTPUT_PATH || path.join(__dirname, "..", "..", "data", "jobs.csv");
   const apiKey = process.env.GROQ_API_KEY;
   const model = process.env.GROQ_MODEL || "llama-3.1-70b-versatile";

@@ -7,7 +7,7 @@ const router = express.Router();
 
 // POST /scrape — kicks off a fresh scrape run.
 // Optional query: ?sampleSize=50 (default 50, capped by env SCRAPE_SAMPLE_SIZE).
-router.post("/scrape", async (req, res) => {
+router.post("/", async (req, res) => {
   const envCap = parseInt(process.env.SCRAPE_SAMPLE_SIZE || "50", 10);
   const requested = parseInt(req.query.sampleSize || req.body?.sampleSize || envCap, 10);
   // Clamp to a sane upper bound. College project — keep it polite.
