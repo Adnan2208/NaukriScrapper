@@ -36,7 +36,6 @@ const CLEARBIT_API_KEY = process.env.CLEARBIT_API_KEY;
 
 // Pre-made map of popular companies -> official websites
 const POPULAR_COMPANY_WEBSITES = require("./popularCompanies.json");
-console.log(POPULAR_COMPANY_WEBSITES);
 
 const CHALLENGE_SELECTORS = [
   'iframe[src*="captcha"]',
@@ -216,7 +215,7 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
     }
     await roleInput.click();
     await roleInput.fill("");
-    await roleInput.type("software developer", { delay: 80 });
+    await roleInput.type("Software Developer", { delay: 80 });
 
     // Experience field: click it, then press Enter to select "Fresher" (first option)
     console.log("→ Setting experience to Fresher via dropdown…");
