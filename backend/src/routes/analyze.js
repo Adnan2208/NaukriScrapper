@@ -8,7 +8,6 @@ const router = express.Router();
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-// Read the CSV and aggregate it enough to fit comfortably in a Groq context.
 async function loadCsvAggregated(csvPath) {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(csvPath)) {
@@ -23,36 +22,22 @@ async function loadCsvAggregated(csvPath) {
   });
 }
 
-// Collapse N rows down to a compact aggregate. Avoids sending the full CSV
-// verbatim — saves tokens and keeps the prompt under control.
 function aggregateForPrompt(rows) {
-  const skillCounts = {};
-  const locationCounts = {};
-  const experienceCounts = {};
-  const salarySamples = [];
+  const companyCounts = {};
+  const websiteSamples = [];
 
   for (const r of rows) {
-    // Skills: usually already |-separated from the scraper.
-    const skillText = (r.skills || "").replace(/\|/g, ",");
-    skillText.split(/[,;]/).forEach((s) => {
-      const k = s.trim().toLowerCase();
-      if (k && k.length > 1) skillCounts[k] = (skillCounts[k] || 0) + 1;
-    });
-
-    const locs = (r.location || "").split(/[,;]/).map((s) => s.trim()).filter(Boolean);
-    locs.forEach((l) => {
-      locationCounts[l] = (locationCounts[l] || 0) + 1;
-    });
-
-    const exp = (r.experience || "").trim();
-    if (exp) experienceCounts[exp] = (experienceCounts[exp] || 0) + 1;
-
-    if (r.salary && r.salary.trim()) {
-      salarySamples.push(r.salary.trim());
+    const company = (r.company || "").trim();
+    if (company) {
+      companyCounts[company] = (companyCounts[company] || 0) + 1;
+    }
+    const website = (r.website || "").trim();
+    if (website) {
+      websiteSamples.push({ company, website });
     }
   }
 
-  const topN = (obj, n = 15) =>
+  const topN = (obj, n = 20) =>
     Object.entries(obj)
       .sort((a, b) => b[1] - a[1])
       .slice(0, n)
@@ -60,47 +45,39 @@ function aggregateForPrompt(rows) {
 
   return {
     rowCount: rows.length,
-    topSkills: topN(skillCounts, 20),
-    topLocations: topN(locationCounts, 15),
-    experienceBuckets: topN(experienceCounts, 10),
-    salarySamples: salarySamples.slice(0, 20),
-    sampleTitles: rows.slice(0, 15).map((r) => r.title).filter(Boolean),
+    uniqueCompanies: Object.keys(companyCounts).length,
+    topCompanies: topN(companyCounts, 20),
+    websiteSamples: websiteSamples.slice(0, 20),
   };
 }
 
 function buildPrompt(agg) {
-  // Strict JSON-only instruction; we validate on the server side.
   return `You are an analyst reviewing a freshly-scraped sample of Naukri job listings
 for software developer / fresher roles in India.
 
 Below is an aggregated view of the dataset (do NOT echo raw rows, just answer from this).
 
 === Aggregated dataset ===
-Total listings: ${agg.rowCount}
-Top skills (skill:count): ${JSON.stringify(agg.topSkills)}
-Top locations (location:count): ${JSON.stringify(agg.topLocations)}
-Experience ranges observed: ${JSON.stringify(agg.experienceBuckets)}
-Salary samples (raw strings): ${JSON.stringify(agg.salarySamples)}
-Sample job titles: ${JSON.stringify(agg.sampleTitles)}
+Total job listings: ${agg.rowCount}
+Unique companies hiring: ${agg.uniqueCompanies}
+Top companies (company:count): ${JSON.stringify(agg.topCompanies)}
+Website samples (company:website): ${JSON.stringify(agg.websiteSamples)}
 === End dataset ===
 
 Produce a JSON object (and ONLY JSON, no markdown, no commentary) with these keys:
 {
-  "topSkills": string[],                // top 10 skills, most demanded first
-  "topLocations": string[],             // top 5 hiring cities/regions
-  "experienceInsights": string[],       // 2-4 short observations about exp ranges (e.g. "most roles are 0-2 yrs")
-  "salaryInsights": string[],           // 2-4 short observations; empty array if no salary data
-  "marketSummary": string               // 2-4 sentence natural language summary of the fresher SD job market based on this data
+  "topHiringCompanies": string[],          // top 10 company names, most frequent first
+  "companyWebsiteExamples": string[],      // 5-10 example "Company: website" pairs
+  "marketSummary": string                  // 2-3 sentence summary of the fresher SD hiring landscape based on this data
 }
 
 Rules:
 - Output strictly valid JSON.
-- Don't fabricate; if a field has no signal, return an empty array / short note.
+- Don't fabricate; if a field has no signal, return empty array / short note.
 - Keep strings concise and useful for a college project demo.`;
 }
 
 function extractJson(text) {
-  // Even with strict instructions, models occasionally wrap in ```json fences.
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) return fence[1].trim();
   return text.trim();
@@ -110,7 +87,6 @@ function safeParseJson(text) {
   try {
     return { ok: true, value: JSON.parse(text) };
   } catch (err) {
-    // One more try: grab the first {...} block in the response.
     const first = text.indexOf("{");
     const last = text.lastIndexOf("}");
     if (first !== -1 && last !== -1 && last > first) {
@@ -124,11 +100,10 @@ function safeParseJson(text) {
   }
 }
 
-// POST /analyze  — reads CSV, sends summary to Groq, returns structured insights.
 router.post("/", async (req, res) => {
   const csvPath = process.env.CSV_OUTPUT_PATH || path.join(__dirname, "..", "..", "data", "jobs.csv");
   const apiKey = process.env.GROQ_API_KEY;
-  const model = process.env.GROQ_MODEL || "llama-3.1-70b-versatile";
+  const model = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
   if (!apiKey) {
     return res.status(500).json({ ok: false, error: "GROQ_API_KEY is missing in server .env" });

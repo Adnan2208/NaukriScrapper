@@ -122,24 +122,15 @@ export default function App() {
       {analysis && (
         <section className="card">
           <h3>AI Insights ({analysis.rowCount} jobs analyzed)</h3>
+          <h4>Top Hiring Companies</h4>
           <ul>
-            {(analysis.insights.topSkills || []).map((s, i) => <li key={"sk"+i}>{s}</li>)}
+            {(analysis.insights.topHiringCompanies || []).map((s, i) => <li key={"hc"+i}>{s}</li>)}
           </ul>
-          <h4>Top locations</h4>
+          <h4>Company Website Examples</h4>
           <ul>
-            {(analysis.insights.topLocations || []).map((s, i) => <li key={"lo"+i}>{s}</li>)}
+            {(analysis.insights.companyWebsiteExamples || []).map((s, i) => <li key={"cw"+i}>{s}</li>)}
           </ul>
-          <h4>Experience insights</h4>
-          <ul>
-            {(analysis.insights.experienceInsights || []).map((s, i) => <li key={"ex"+i}>{s}</li>)}
-          </ul>
-          <h4>Salary insights</h4>
-          <ul>
-            {(analysis.insights.salaryInsights || []).length
-              ? (analysis.insights.salaryInsights || []).map((s, i) => <li key={"sa"+i}>{s}</li>)
-              : <li className="muted">No salary data was scraped for this run.</li>}
-          </ul>
-          <h4>Market summary</h4>
+          <h4>Market Summary</h4>
           <p className="summary">{analysis.insights.marketSummary}</p>
         </section>
       )}
