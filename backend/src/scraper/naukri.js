@@ -199,83 +199,89 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
     await roleInput.fill("");
     await roleInput.type("software developer", { delay: 80 });
 
-    // Experience dropdown: click to open, pick "0 years" / "Fresher"
-    const expDDSelectors = ["#expDD", ".expDD", "[id*='expDD']", "div[class*='exp']", "select[name*='exp' i]"];
-    let expDD = null;
-    for (const sel of expDDSelectors) {
+    // Experience field: click it, then press Enter to select "Fresher" (first option)
+    console.log("→ Setting experience to Fresher via dropdown…");
+    const expInputSelectors = [
+      'input[placeholder*="Experience" i]',
+      'input[name*="exp" i]',
+      'input[id*="exp" i]',
+      'input[placeholder*="Select Experience" i]',
+      'input[class*="exp"]',
+      'input[aria-label*="Experience" i]',
+      'input[placeholder*="Year" i]',
+    ];
+    let expInput = null;
+    for (const sel of expInputSelectors) {
       const loc = page.locator(sel).first();
-      if (await loc.count()) { expDD = loc; break; }
+      if (await loc.count()) { expInput = loc; break; }
     }
-    if (expDD) {
-      await expDD.click();
-      await randDelay();
-      const fresherSelectors = [
-        '//li[normalize-space()="0 years"]',
-        '//li[normalize-space()="Fresher"]',
-        '//li[contains(., "0 year")]',
-        '//li[contains(., "Fresher")]',
-        'li:has-text("0 years")',
-        'li:has-text("Fresher")',
-      ];
-      for (const sel of fresherSelectors) {
-        const opt = page.locator(sel).first();
-        if (await opt.count()) {
-          await opt.click();
-          break;
-        }
+    if (!expInput) {
+      const fallback = page.locator('//input[preceding::text()[contains(., "Experience")]][1]').first();
+      if (await fallback.count()) expInput = fallback;
+    }
+    if (!expInput) {
+      await captureDebug(page, "no-exp-input");
+      throw new Error(`Could not locate Experience input field. See ${DEBUG_DIR} for a screenshot/HTML dump.`);
+    }
+    await expInput.click();
+    await randDelay(500, 1000);
+    await page.keyboard.press("Enter");
+    await randDelay();
+
+    // Location field: click the "Select" button inside it (as user described)
+    console.log("→ Handling location field…");
+    const locationSelectBtnSelectors = [
+      'input[placeholder*="Location" i] + button',
+      'input[placeholder*="Location" i] ~ button',
+      'button:has-text("Select"):near(input[placeholder*="Location" i])',
+      'div[class*="location"] button:has-text("Select")',
+      'button[class*="location"]:has-text("Select")',
+      '//input[contains(@placeholder, "Location")]/following-sibling::button',
+      '//label[contains(., "Location")]/following-sibling::div//button[contains(., "Select")]',
+    ];
+    for (const sel of locationSelectBtnSelectors) {
+      const loc = page.locator(sel).first();
+      if (await loc.count()) {
+        await loc.click().catch(() => {});
+        await randDelay(500, 1000);
+        break;
       }
-    } else {
-      // Fallback: try typing into an experience text field
-      const expText = page.locator('input[placeholder*="Experience" i], input[name*="exp" i]').first();
-      if (await expText.count()) {
-        await expText.click();
-        await expText.fill("0");
-      }
+    }
+    // If no select button found, just click the location input to dismiss any dropdown
+    const locationInput = page.locator('input[placeholder*="Location" i]').first();
+    if (await locationInput.count()) {
+      await locationInput.click().catch(() => {});
+      await randDelay(500, 1000);
     }
 
     await randDelay();
 
-    // Click the Search button
-    const searchBtnSelectors = [
-      "button[type='submit']",
-      "input[type='submit']",
-      "a.search-btn",
-      "button:has-text('Search')",
-      "button:has-text('SEARCH')",
-      "[class*='searchBtn']",
-      "[class*='search-btn']",
-    ];
-    let searchBtn = null;
-    for (const sel of searchBtnSelectors) {
-      const loc = page.locator(sel).first();
-      if (await loc.count()) { searchBtn = loc; break; }
-    }
-    if (!searchBtn) {
-      await captureDebug(page, "no-search-button");
-      throw new Error(`Could not locate Search button. See ${DEBUG_DIR} for a screenshot/HTML dump.`);
-    }
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-      searchBtn.click(),
-    ]);
+    // Press Enter to submit the search (form submission)
+    console.log("→ Submitting search via Enter key…");
+    await page.keyboard.press("Enter");
 
     console.log("→ Waiting for results page to render job cards…");
+    // Wait for network to settle (results load via XHR/fetch)
+    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
     await dismissConsentModals(page);
+
+    // Check for challenge BEFORE waiting for cards
+    const challengeOnResults = await detectChallenge(page);
+    if (challengeOnResults) {
+      await captureDebug(page, "challenge-on-results");
+      throw new Error(
+        `Challenge appeared on results page (${challengeOnResults}). Aborting. See ${DEBUG_DIR} for a screenshot/HTML dump.`
+      );
+    }
 
     // Results page cards — be broad since class names change
     const resultsAppeared = await page.waitForSelector(
-      'article[class*="jobTuple"], div[class*="jobTuple"], div[data-job-id], li[class*="jobTuple"], div[class*="srp-jobtuple"]',
+      'article[class*="jobTuple"], div[class*="jobTuple"], div[data-job-id], li[class*="jobTuple"], div[class*="srp-jobtuple"], div[class*="job-card"], div[class*="tuple"], div[class*="listing"]',
       { timeout: 60000 }
     ).then(() => true).catch(() => false);
 
     if (!resultsAppeared) {
       await captureDebug(page, "no-results-cards");
-      const challengeOnResults = await detectChallenge(page);
-      if (challengeOnResults) {
-        throw new Error(
-          `Challenge appeared on results page (${challengeOnResults}). Aborting. See ${DEBUG_DIR} for a screenshot/HTML dump.`
-        );
-      }
       throw new Error(`No job cards appeared on results page within timeout. See ${DEBUG_DIR} for a screenshot/HTML dump — class names may have changed.`);
     }
     await randDelay();
