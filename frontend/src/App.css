@@ -1,0 +1,121 @@
+:root {
+  --bg: #0f172a;
+  --fg: #e2e8f0;
+  --muted: #94a3b8;
+  --card: #1e293b;
+  --accent: #38bdf8;
+  --accent-strong: #0ea5e9;
+  --danger: #f87171;
+  --good: #4ade80;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+
+header h1 {
+  margin-bottom: 8px;
+  font-size: 28px;
+}
+
+.sub {
+  color: var(--muted);
+  margin-top: 0;
+}
+
+.status-card, .card {
+  background: var(--card);
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin: 16px 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.controls label {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.controls input[type="number"] {
+  width: 80px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #475569;
+  background: #0f172a;
+  color: var(--fg);
+}
+
+button {
+  background: var(--accent);
+  color: #0f172a;
+  border: 0;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 10px 14px;
+  border-radius: 8px;
+}
+
+.card pre {
+  overflow-x: auto;
+  background: #0b1220;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.summary {
+  background: #0b1220;
+  padding: 12px;
+  border-radius: 8px;
+  border-left: 3px solid var(--accent);
+}
+
+.muted { color: var(--muted); }
+
+code {
+  background: #0b1220;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+footer {
+  margin-top: 32px;
+  color: var(--muted);
+  font-size: 13px;
+}

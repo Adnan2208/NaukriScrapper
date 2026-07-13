@@ -1,0 +1,9 @@
+/* Minimal global reset - the App.css handles our styling */
+body {
+  margin: 0;
+  background: #0f172a;
+}
+
+#root {
+  min-height: 100vh;
+}
