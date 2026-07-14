@@ -8,15 +8,13 @@
  *   4. Handle location field (click Select button if present)
  *   5. Submit search via Enter key
  *   6. waitForSelector on job listing cards
- *   7. Scrape each card; paginate until sampleSize reached
- *   8. Write rows to CSV incrementally (one row at a time)
+ *   7. For each card: extract company name + AmbitionBox review link
+ *   8. Visit AmbitionBox link, scrape official website from company About page
+ *   9. Write rows to CSV incrementally (company, officialWebsite)
+ *   10. Save AmbitionBox links to separate file for reference
  *
- * Scrapes ONLY:
- *   - company: company name from the job card
- *   - website: official company website
- *       1. Check pre-made popular company map
- *       2. If not found and Clearbit API key is set, query Clearbit autocomplete
- *       3. Fallback: "direct domain scrape not possible"
+ * CSV output: company, officialWebsite, scrapedAt
+ * Separate file: ambitionbox_links.json (company -> ambitionboxUrl)
  *
  * The scraper is intentionally defensive:
  *   - Randomized delays (2-5s) between human-ish actions
@@ -32,10 +30,6 @@ const { format } = require("fast-csv");
 const DEFAULT_SAMPLE_SIZE = parseInt(process.env.SCRAPE_SAMPLE_SIZE || "50", 10);
 const DEBUG_DIR = process.env.SCRAPE_DEBUG_DIR || "./debug";
 const HEADLESS = process.env.SCRAPE_HEADLESS === "false" ? false : true;
-const CLEARBIT_API_KEY = process.env.CLEARBIT_API_KEY;
-
-// Pre-made map of popular companies -> official websites
-const POPULAR_COMPANY_WEBSITES = require("./popularCompanies.json");
 
 const CHALLENGE_SELECTORS = [
   'iframe[src*="captcha"]',
@@ -106,54 +100,147 @@ async function captureDebug(page, tag) {
   }
 }
 
-// Resolve company website:
-// 1. Check pre-made popular company map
-// 2. If not found and Clearbit API key is set, query Clearbit autocomplete
-// 3. Fallback: return "direct domain scrape not possible"
-async function resolveCompanyWebsite(companyName) {
-  if (!companyName || !companyName.trim()) {
-    return "direct domain scrape not possible";
-  }
-
-  const cleanKey = companyName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "")
-    .trim();
-
-  if (!cleanKey) {
-    return "direct domain scrape not possible";
-  }
-
-  // 1. Popular company map
-  if (POPULAR_COMPANY_WEBSITES[cleanKey]) {
-    return POPULAR_COMPANY_WEBSITES[cleanKey];
-  }
-
-  // 2. Clearbit Autocomplete API (no API key required)
+// Extract official website from AmbitionBox company Overview page
+// Uses a separate page to avoid losing the Naukri results page context
+async function scrapeOfficialWebsiteFromAmbitionBox(browser, ambitionBoxUrl, companyName) {
+  const page = await browser.newPage();
   try {
-    const response = await fetch(
-      `https://autocomplete.clearbit.com/v1/companies/suggest?query=${encodeURIComponent(companyName)}`
-    );
+    // Convert reviews URL to overview URL
+    // Reviews: https://www.ambitionbox.com/reviews/mastercard-reviews?...
+    // Overview: https://www.ambitionbox.com/overview/mastercard-overview
+    let overviewUrl = ambitionBoxUrl;
+    if (ambitionBoxUrl.includes("/reviews/")) {
+      overviewUrl = ambitionBoxUrl
+        .replace("/reviews/", "/overview/")
+        .replace("-reviews", "-overview");
+    }
+    
+    console.log(`   → Visiting AmbitionBox Overview: ${overviewUrl}`);
+    await page.goto(overviewUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await randDelay(2000, 4000);
 
-    if (response.ok) {
-      const data = await response.json();
+    // Check for challenge
+    const challenge = await detectChallenge(page);
+    if (challenge) {
+      console.warn(`   AmbitionBox challenge detected: ${challenge}`);
+      return "direct domain scrape not possible";
+    }
 
-      if (Array.isArray(data) && data.length > 0 && data[0].domain) {
-        return `https://${data[0].domain}`;
+    // Scroll down to load the website section
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let total = 0;
+        const id = setInterval(() => {
+          window.scrollBy(0, 500);
+          total += 500;
+          if (total >= document.body.scrollHeight) {
+            clearInterval(id);
+            resolve();
+          }
+        }, 200);
+      });
+    });
+    await randDelay(1000, 2000);
+
+    // Look for the website link - specific AmbitionBox structure:
+    // <div>Website</div> followed by <a testid="Website" data-testid="Website" aria-label="domain.com">
+    const websiteSelectors = [
+      // Direct selectors based on the HTML structure provided
+      'a[testid="Website"]',
+      'a[data-testid="Website"]',
+      'a[aria-label]:has-text(".in"), a[aria-label]:has-text(".com"), a[aria-label]:has-text(".org"), a[aria-label]:has-text(".net")',
+      // Generic: link next to "Website" text
+      '//div[contains(text(), "Website")]/following-sibling::a[@href]',
+      '//div[contains(text(), "Website")]/parent::div//a[@href]',
+      '//*[contains(text(), "Website")]/following::a[@href][1]',
+    ];
+
+    for (const sel of websiteSelectors) {
+      try {
+        const link = page.locator(sel).first();
+        if (await link.count()) {
+          const href = await link.getAttribute("href").catch(() => "");
+          const ariaLabel = await link.getAttribute("aria-label").catch(() => "");
+          const text = await link.innerText().catch(() => "");
+          
+          // Get the actual website URL
+          let websiteUrl = href || ariaLabel || text;
+          
+          if (websiteUrl && (websiteUrl.startsWith("http") || websiteUrl.includes("."))) {
+            // Ensure it has a protocol
+            if (!websiteUrl.startsWith("http")) {
+              websiteUrl = `https://${websiteUrl}`;
+            }
+            
+            // Filter out social media and known non-website links
+            const excludePatterns = [
+              "linkedin.com", "facebook.com", "twitter.com", "x.com",
+              "instagram.com", "youtube.com", "glassdoor.com", "indeed.com",
+              "ambitionbox.com", "naukri.com", "github.com", "angel.co",
+              "crunchbase.com", "wikipedia.org", "play.google.com", "apps.apple.com"
+            ];
+            
+            const isExcluded = excludePatterns.some(p => websiteUrl.includes(p));
+            if (!isExcluded) {
+              console.log(`   ✓ Found official website: ${websiteUrl}`);
+              return websiteUrl;
+            }
+          }
+        }
+      } catch (_) {
       }
     }
-  } catch (_) {
-    // Ignore errors and fall through
-  }
 
-  // 3. Fallback
-  return "direct domain scrape not possible";
+    // Fallback: try to find any external link in the main content area
+    try {
+      const allLinks = await page.locator('a[href^="http"]').all();
+      for (const link of allLinks) {
+        const href = await link.getAttribute("href").catch(() => "");
+        if (href && href.startsWith("http")) {
+          const excludePatterns = [
+            "linkedin.com", "facebook.com", "twitter.com", "x.com",
+            "instagram.com", "youtube.com", "glassdoor.com", "indeed.com",
+            "ambitionbox.com", "naukri.com", "github.com", "angel.co",
+            "crunchbase.com", "wikipedia.org", "play.google.com", "apps.apple.com"
+          ];
+          const isExcluded = excludePatterns.some(p => href.includes(p));
+          if (!isExcluded) {
+            console.log(`   ✓ Found website (fallback): ${href}`);
+            return href;
+          }
+        }
+      }
+    } catch (_) {
+    }
+
+    console.warn(`   Could not find official website on AmbitionBox for ${companyName}`);
+    return "direct domain scrape not possible";
+  } catch (err) {
+    console.warn(`   Error scraping AmbitionBox for ${companyName}: ${err.message}`);
+    return "direct domain scrape not possible";
+  } finally {
+    await page.close().catch(() => {});
+  }
 }
 
 async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) {
   if (!csvPath) csvPath = "./data/jobs.csv";
+  
+  // AmbitionBox links file
+  const ambitionBoxFile = csvPath.replace(".csv", "_ambitionbox_links.json");
+  
   fs.mkdirSync(path.dirname(csvPath), { recursive: true });
   fs.writeFileSync(csvPath, "");
+  
+  // Load existing AmbitionBox links if file exists
+  let ambitionBoxLinks = {};
+  if (fs.existsSync(ambitionBoxFile)) {
+    try {
+      ambitionBoxLinks = JSON.parse(fs.readFileSync(ambitionBoxFile, "utf-8"));
+    } catch (_) {
+      ambitionBoxLinks = {};
+    }
+  }
 
   const csvStream = format({ headers: true });
   csvStream.pipe(fs.createWriteStream(csvPath, { flags: "a" }));
@@ -246,7 +333,7 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
     await page.keyboard.press("Enter");
     await randDelay();
 
-    // Location field: click the "Select" button inside it (as user described)
+    // Location field: click the "Select" button inside it
     console.log("→ Handling location field…");
     const locationSelectBtnSelectors = [
       'input[placeholder*="Location" i] + button',
@@ -265,7 +352,6 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
         break;
       }
     }
-    // If no select button found, just click the location input to dismiss any dropdown
     const locationInput = page.locator('input[placeholder*="Location" i]').first();
     if (await locationInput.count()) {
       await locationInput.click().catch(() => {});
@@ -357,12 +443,57 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
             continue;
           }
 
-          // Resolve website
-          const website = await resolveCompanyWebsite(company);
+          // Find AmbitionBox review link in the card
+          // Structure: div.srp-jobtuple-wrapper → div.row-2 → a.rating
+          let ambitionBoxUrl = "";
+          const ambitionBoxSelectors = [
+            'div[class*="srp-jobtuple-wrapper"] div[class*="row-2"] a[class*="rating"]',
+            'div[class*="srp-jobtuple-wrapper"] a[class*="rating"]',
+            'div[class*="jobTuple"] a[class*="rating"]',
+            'a[class*="rating"][href*="ambitionbox"]',
+            'a[href*="ambitionbox.com"][class*="rating"]',
+          ];
+          
+          for (const sel of ambitionBoxSelectors) {
+            const link = card.locator(sel).first();
+            if (await link.count()) {
+              const href = await link.getAttribute("href").catch(() => "");
+              if (href && href.includes("ambitionbox")) {
+                ambitionBoxUrl = href.startsWith("http") ? href : `https://www.ambitionbox.com${href}`;
+                break;
+              }
+            }
+          }
+
+          // If still not found, try broader search
+          if (!ambitionBoxUrl) {
+            const allLinks = card.locator('a[href*="ambitionbox.com"]');
+            const linkCount = await allLinks.count();
+            for (let j = 0; j < linkCount; j++) {
+              const href = await allLinks.nth(j).getAttribute("href").catch(() => "");
+              if (href && href.includes("ambitionbox")) {
+                ambitionBoxUrl = href.startsWith("http") ? href : `https://www.ambitionbox.com${href}`;
+                break;
+              }
+            }
+          }
+
+          if (!ambitionBoxUrl) {
+            console.warn(`   No AmbitionBox link found for ${company}, skipping`);
+            continue;
+          }
+
+          // Store AmbitionBox link
+          ambitionBoxLinks[company] = ambitionBoxUrl;
+          fs.writeFileSync(ambitionBoxFile, JSON.stringify(ambitionBoxLinks, null, 2));
+
+          // Scrape official website from AmbitionBox
+          console.log(`   → Scraping official website for ${company} from AmbitionBox…`);
+          const officialWebsite = await scrapeOfficialWebsiteFromAmbitionBox(browser, ambitionBoxUrl, company);
 
           const row = {
             company,
-            website,
+            officialWebsite,
             scrapedAt: new Date().toISOString(),
           };
 
@@ -400,10 +531,11 @@ async function scrapeNaukri({ sampleSize = DEFAULT_SAMPLE_SIZE, csvPath } = {}) 
     }
 
     console.log(`✓ Done. ${totalSoFar} company records written to ${csvPath}`);
-    return { count: totalSoFar, csvPath, records: collected };
+    console.log(`✓ AmbitionBox links saved to ${ambitionBoxFile}`);
+    return { count: totalSoFar, csvPath, records: collected, ambitionBoxFile };
   } catch (err) {
     console.error(`✗ Scrape failed: ${err.message}`);
-    return { count: totalSoFar, csvPath, records: collected, error: err.message };
+    return { count: totalSoFar, csvPath, records: collected, error: err.message, ambitionBoxFile };
   } finally {
     csvStream.end();
     await context.close().catch(() => {});
